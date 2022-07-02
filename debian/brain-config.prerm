@@ -1,5 +1,5 @@
 #! /bin/sh
-# prerm script for raspi-config
+# prerm script for brain-config
 #
 # see: dh_installdeb(1)
 

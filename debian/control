@@ -1,15 +1,14 @@
-Source: raspi-config
+Source: brain-config
 Section: utils
 Priority: optional
-Maintainer: Serge Schneider <serge@raspberrypi.com>
+Maintainer: Brain Hackers <dummy@example.com>
 Build-Depends: debhelper (>= 8.0.0)
 Standards-Version: 4.3.0
-Vcs-Git: git://git@github.com:RPi-Distro/raspi-config.git
-Vcs-Browser: https://github.com/RPi-Distro/raspi-config
+Vcs-Git: git@github.com:brain-hackers/brain-config.git
+Vcs-Browser: https://github.com/brain-hackers/brain-config
 
-Package: raspi-config
+Package: brain-config
 Architecture: all
 Depends: ${misc:Depends}, whiptail, parted, lua5.1, alsa-utils, psmisc, initramfs-tools
 Recommends: triggerhappy, iw
-Description: Raspberry Pi configuration tool
- A simple configuration tool for common Raspberry Pi administrative tasks
+Description: SHARP Brain configuration tool

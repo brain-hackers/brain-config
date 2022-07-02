@@ -1,6 +1,6 @@
 #!/bin/sh
 
-reboot_pi () {
+reboot_brain () {
   umount /boot
   mount / -o remount,ro
   sync
@@ -101,7 +101,7 @@ main () {
   fi
 
   if [ "$ROOT_PART_END" -eq "$TARGET_END" ]; then
-    reboot_pi
+    reboot_brain
   fi
 
   if ! parted -m "$ROOT_DEV" u s resizepart "$ROOT_PART_NUM" "$TARGET_END"; then
@@ -122,7 +122,7 @@ mkdir -p /run/systemd
 mount /boot
 mount / -o remount,ro
 
-sed -i 's| init=/usr/lib/raspi-config/init_resize\.sh||' /boot/cmdline.txt
+sed -i 's| init=/usr/lib/brain-config/init_resize\.sh||' /boot/cmdline.txt
 sed -i 's| sdhci\.debug_quirks2=4||' /boot/cmdline.txt
 
 if ! grep -q splash /boot/cmdline.txt; then
@@ -132,15 +132,15 @@ mount /boot -o remount,ro
 sync
 
 if ! check_commands; then
-  reboot_pi
+  reboot_brain
 fi
 
 if main; then
   whiptail --infobox "Resized root filesystem. Rebooting in 5 seconds..." 20 60
   sleep 5
 else
-  whiptail --msgbox "Could not expand filesystem, please try raspi-config or rc_gui.\n${FAIL_REASON}" 20 60
+  whiptail --msgbox "Could not expand filesystem, please try brain-config or rc_gui.\n${FAIL_REASON}" 20 60
   sleep 5
 fi
 
-reboot_pi
+reboot_brain
