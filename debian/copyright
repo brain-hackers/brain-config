@@ -1,8 +1,8 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Source: https://github.com/RPi-Distro/raspi-config
+Source: https://github.com/brain-hackers/brain-config
 
 Files: *
-Copyright: 2012 Alex Bradbury <asb@asbradbury.org>
+Copyright: 2022 Brain Hackers <dummy@example.com>
 License: MIT
 
 License: MIT
