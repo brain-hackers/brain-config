@@ -122,7 +122,7 @@ mkdir -p /run/systemd
 mount /boot
 mount / -o remount,ro
 
-sed -i 's| init=/usr/lib/raspi-config/init_resize\.sh||' /boot/cmdline.txt
+sed -i 's| init=/usr/lib/brain-config/init_resize\.sh||' /boot/cmdline.txt
 sed -i 's| sdhci\.debug_quirks2=4||' /boot/cmdline.txt
 
 if ! grep -q splash /boot/cmdline.txt; then
@@ -139,7 +139,7 @@ if main; then
   whiptail --infobox "Resized root filesystem. Rebooting in 5 seconds..." 20 60
   sleep 5
 else
-  whiptail --msgbox "Could not expand filesystem, please try raspi-config or rc_gui.\n${FAIL_REASON}" 20 60
+  whiptail --msgbox "Could not expand filesystem, please try brain-config or rc_gui.\n${FAIL_REASON}" 20 60
   sleep 5
 fi
 

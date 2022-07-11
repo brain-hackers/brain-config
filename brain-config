@@ -6,26 +6,13 @@
 
 INTERACTIVE=True
 ASK_TO_REBOOT=0
-BLACKLIST=/etc/modprobe.d/raspi-blacklist.conf
+BLACKLIST=/etc/modprobe.d/brain-blacklist.conf
 CONFIG=/boot/config.txt
 # TODO: erase these envs
 
 USER=${SUDO_USER:-$(who -m | awk '{ print $1 }')}
 
-is_pi () {
-  ARCH=$(dpkg --print-architecture)
-  if [ "$ARCH" = "armhf" ] || [ "$ARCH" = "arm64" ] ; then
-    return 0
-  else
-    return 1
-  fi
-}
-
-if is_pi ; then
-  CMDLINE=/boot/cmdline.txt
-else
-  CMDLINE=/proc/cmdline
-fi
+CMDLINE=/boot/cmdline.txt
 
 calc_wt_size() {
   # NOTE: it's tempting to redirect stderr to /dev/null, so supress error 
@@ -50,7 +37,7 @@ configuration of the SHARP Brain. Although it can be run
 at any time, some of the options may have difficulties if
 you have heavily customised your installation.
 
-$(dpkg -s raspi-config 2> /dev/null | grep Version)\
+$(dpkg -s brain-config 2> /dev/null | grep Version)\
 " 20 70 1
   return 0
 }
@@ -227,11 +214,9 @@ do_wifi_country() {
     fi
     if hash rfkill 2> /dev/null; then
       rfkill unblock wifi
-      if is_pi ; then
-        for filename in /var/lib/systemd/rfkill/*:wlan ; do
-          echo 0 > $filename
-        done
-      fi
+      for filename in /var/lib/systemd/rfkill/*:wlan ; do
+        echo 0 > $filename
+      done
     fi
     if [ "$INTERACTIVE" = True ]; then
       whiptail --msgbox "Wireless LAN country set to $COUNTRY" 20 60 1
@@ -310,11 +295,11 @@ do_ssh() {
   fi
 }
 
-disable_raspi_config_at_boot() {
-  if [ -e /etc/profile.d/raspi-config.sh ]; then
-    rm -f /etc/profile.d/raspi-config.sh
-    if [ -e /etc/systemd/system/getty@tty1.service.d/raspi-config-override.conf ]; then
-      rm /etc/systemd/system/getty@tty1.service.d/raspi-config-override.conf
+disable_brain_config_at_boot() {
+  if [ -e /etc/profile.d/brain-config.sh ]; then
+    rm -f /etc/profile.d/brain-config.sh
+    if [ -e /etc/systemd/system/getty@tty1.service.d/brain-config-override.conf ]; then
+      rm /etc/systemd/system/getty@tty1.service.d/brain-config-override.conf
     fi
     telinit q
   fi
@@ -468,7 +453,7 @@ do_wifi_ssid_passphrase() {
 }
 
 do_finish() {
-  disable_raspi_config_at_boot
+  disable_brain_config_at_boot
   if [ $ASK_TO_REBOOT -eq 1 ]; then
     whiptail --yesno "Would you like to reboot now?" 20 60 2
     if [ $? -eq 0 ]; then # yes
@@ -527,12 +512,12 @@ done
 
 # Everything else needs to be run as root
 if [ $(id -u) -ne 0 ]; then
-  printf "Script must be run as root. Try 'sudo raspi-config'\n"
+  printf "Script must be run as root. Try 'sudo brain-config'\n"
   exit 1
 fi
 
 do_system_menu() {
-  FUN=$(whiptail --title "Raspberry Pi Software Configuration Tool (raspi-config)" --menu "System Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
+  FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "System Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
   "S1 Wireless LAN" "Enter SSID and passphrase" \
   "S3 Password" "Change password for the '$USER' user" \
   "S4 Hostname" "Set name for this computer on a network" \
@@ -551,7 +536,7 @@ do_system_menu() {
 }
 
 do_interface_menu() {
-  FUN=$(whiptail --title "Raspberry Pi Software Configuration Tool (raspi-config)" --menu "Interfacing Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
+  FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Interfacing Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
     "I2 SSH" "Enable/disable remote command line access using SSH" \
     3>&1 1>&2 2>&3)
   RET=$?
@@ -566,7 +551,7 @@ do_interface_menu() {
 }
 
 do_internationalisation_menu() {
-  FUN=$(whiptail --title "Raspberry Pi Software Configuration Tool (raspi-config)" --menu "Localisation Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
+  FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Localisation Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
     "L1 Locale" "Configure language and regional settings" \
     "L2 Timezone" "Configure time zone" \
     "L4 WLAN Country" "Set legal wireless channels for your country" \
@@ -585,7 +570,7 @@ do_internationalisation_menu() {
 }
 
 do_advanced_menu() {
-  FUN=$(whiptail --title "Raspberry Pi Software Configuration Tool (raspi-config)" --menu "Advanced Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
+  FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Advanced Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
     "A1 Expand Filesystem" "Ensures that all of the SD card is available" \
     "A4 Network Interface Names" "Enable/disable predictable network i/f names" \
     3>&1 1>&2 2>&3)
@@ -608,16 +593,16 @@ if [ "$INTERACTIVE" = True ]; then
   [ -e $CONFIG ] || touch $CONFIG
   calc_wt_size
   while [ "$USER" = "root" ] || [ -z "$USER" ]; do
-    if ! USER=$(whiptail --inputbox "raspi-config could not determine the default user.\\n\\nWhat user should these settings apply to?" 20 60 pi 3>&1 1>&2 2>&3); then
+    if ! USER=$(whiptail --inputbox "brain-config could not determine the default user.\\n\\nWhat user should these settings apply to?" 20 60 pi 3>&1 1>&2 2>&3); then
       return 0
     fi
   done
   while true; do
-    FUN=$(whiptail --title "Raspberry Pi Software Configuration Tool (raspi-config)" --menu "Setup Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Finish --ok-button Select \
+    FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Setup Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Finish --ok-button Select \
       "1 System Options" "Configure system settings" \
       "5 Localisation Options" "Configure language and regional settings" \
       "6 Advanced Options" "Configure advanced settings" \
-      "9 About raspi-config" "Information about this configuration tool" \
+      "9 About brain-config" "Information about this configuration tool" \
       3>&1 1>&2 2>&3)
     RET=$?
     if [ $RET -eq 1 ]; then
