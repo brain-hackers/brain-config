@@ -21,11 +21,11 @@ jobs:
         # https://github.community/t/how-to-get-just-the-tag-name/16241/4
         run: echo ::set-output name=name::${GITHUB_REF/refs\/*s\//}
       - name: Generate the tag name for a branch build
-        if: startsWith(steps.release_name.outputs.name, 'ci-')
+        if: ${{ startsWith(steps.release_name.outputs.name, 'ci-') }}
         run: |
           echo "RELEASE_TAG_NAME=${GITHUB_REF/refs\/*s\//}-tag" >> $GITHUB_ENV
       - name: Generate the tag name for a branch build
-        if: ! startsWith(steps.release_name.outputs.name, 'ci-')
+        if: ${{ !startsWith(steps.release_name.outputs.name, 'ci-') }}
         run: |
           echo "RELEASE_TAG_NAME=${GITHUB_REF/refs\/*s\//}" >> $GITHUB_ENV
       - name: Generate changes file
