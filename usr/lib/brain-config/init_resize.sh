@@ -1,6 +1,6 @@
 #!/bin/sh
 
-reboot_pi () {
+reboot_brain () {
   umount /boot
   mount / -o remount,ro
   sync
@@ -101,7 +101,7 @@ main () {
   fi
 
   if [ "$ROOT_PART_END" -eq "$TARGET_END" ]; then
-    reboot_pi
+    reboot_brain
   fi
 
   if ! parted -m "$ROOT_DEV" u s resizepart "$ROOT_PART_NUM" "$TARGET_END"; then
@@ -132,7 +132,7 @@ mount /boot -o remount,ro
 sync
 
 if ! check_commands; then
-  reboot_pi
+  reboot_brain
 fi
 
 if main; then
@@ -143,4 +143,4 @@ else
   sleep 5
 fi
 
-reboot_pi
+reboot_brain
