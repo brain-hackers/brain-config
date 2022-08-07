@@ -1,0 +1,80 @@
+name: Build
+
+on:
+  push:
+    branches: ci*
+    tags: '*'
+
+jobs:
+  create_release:
+    name: Create release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          submodules: false
+      - name: Generate release name
+        id: release_name
+        # https://github.community/t/how-to-get-just-the-tag-name/16241/4
+        run: echo ::set-output name=name::${GITHUB_REF/refs\/*s\//}
+      - name: Generate the tag name for a branch build
+        if: ${{ startsWith(steps.release_name.outputs.name, 'ci-') }}
+        run: |
+          echo "RELEASE_TAG_NAME=${GITHUB_REF/refs\/*s\//}-tag" >> $GITHUB_ENV
+      - name: Generate the tag name for a branch build
+        if: ${{ !startsWith(steps.release_name.outputs.name, 'ci-') }}
+        run: |
+          echo "RELEASE_TAG_NAME=${GITHUB_REF/refs\/*s\//}" >> $GITHUB_ENV
+      - name: Generate changes file
+        uses: sarnold/gitchangelog-action@master
+        with:
+          config_file: .gitchangelog.rc
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: CHANGES.md
+          draft: false
+          prerelease: true
+          name: ${{ steps.release_name.outputs.name }}
+          tag_name: ${{ env.RELEASE_TAG_NAME }}
+
+  build-linux:
+    runs-on: ubuntu-20.04
+    needs: [create_release]
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+      - name: Workaround for apt update failure
+        run: sudo rm /etc/apt/sources.list.d/github_git-lfs.*
+      - name: Prepare packaging & packagecloud CLI
+        run: |
+          sudo apt update
+          sudo apt install debhelper ruby-dev
+          sudo gem install package_cloud
+      - name: Build the Debian package
+        run: ./debian/rules build && sudo ./debian/rules binary
+      - name: Generate archive name
+        id: archive_name
+        run: echo ::set-output name=name::$(python .github/archive_name.py)
+      - name: Upload the package to GitHub
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          asset_path: ../${{ steps.archive_name.outputs.name }}
+          asset_name: ${{ steps.archive_name.outputs.name }}
+          asset_content_type: application/vnd.debian.binary-package
+      - name: Upload the package to packagecloud
+        env:
+          USERNAME: brainhackers
+          REPO: brainux/any/any
+          PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
+        run: |
+          package_cloud push "${USERNAME}/${REPO}" "../${{steps.archive_name.outputs.name}}"

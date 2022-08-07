@@ -1,6 +1,6 @@
 #!/bin/sh
 ### BEGIN INIT INFO
-# Provides:          raspi-config
+# Provides:          brain-config
 # Required-Start: udev mountkernfs $remote_fs
 # Required-Stop:
 # Default-Start: S 2 3 4 5

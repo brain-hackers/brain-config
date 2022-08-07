@@ -1,0 +1,622 @@
+#!/bin/sh
+# Part of brain-config https://github.com/brain-hackers/brain-config
+# Forked from raspi-config https://github.com/RPi-Distro/raspi-config
+#
+# See LICENSE file for copyright and license details
+
+INTERACTIVE=True
+ASK_TO_REBOOT=0
+BLACKLIST=/etc/modprobe.d/brain-blacklist.conf
+CONFIG=/boot/config.txt
+# TODO: erase these envs
+
+USER=${SUDO_USER:-$(who -m | awk '{ print $1 }')}
+
+CMDLINE=/boot/cmdline.txt
+
+calc_wt_size() {
+  # NOTE: it's tempting to redirect stderr to /dev/null, so supress error 
+  # output from tput. However in this case, tput detects neither stdout or 
+  # stderr is a tty and so only gives default 80, 24 values
+  WT_HEIGHT=18
+  WT_WIDTH=$(tput cols)
+
+  if [ -z "$WT_WIDTH" ] || [ "$WT_WIDTH" -lt 60 ]; then
+    WT_WIDTH=80
+  fi
+  if [ "$WT_WIDTH" -gt 178 ]; then
+    WT_WIDTH=120
+  fi
+  WT_MENU_HEIGHT=$(($WT_HEIGHT-7))
+}
+
+do_about() {
+  whiptail --msgbox "\
+This tool provides a straightforward way of doing initial
+configuration of the SHARP Brain. Although it can be run
+at any time, some of the options may have difficulties if
+you have heavily customised your installation.
+
+$(dpkg -s brain-config 2> /dev/null | grep Version)\
+" 20 70 1
+  return 0
+}
+
+do_expand_rootfs() {
+  ROOT_PART="$(findmnt / -o source -n)"
+  ROOT_DEV="/dev/$(lsblk -no pkname "$ROOT_PART")"
+
+  PART_NUM="$(echo "$ROOT_PART" | grep -o "[[:digit:]]*$")"
+
+  # NOTE: the NOOBS partition layout confuses parted. For now, let's only 
+  # agree to work with a sufficiently simple partition layout
+  if [ "$PART_NUM" -ne 2 ]; then
+    whiptail --msgbox "Your partition layout is not currently supported by this tool. You are probably using NOOBS, in which case your root filesystem is already expanded anyway." 20 60 2
+    return 0
+  fi
+
+  LAST_PART_NUM=$(parted "$ROOT_DEV" -ms unit s p | tail -n 1 | cut -f 1 -d:)
+  if [ $LAST_PART_NUM -ne $PART_NUM ]; then
+    whiptail --msgbox "$ROOT_PART is not the last partition. Don't know how to expand" 20 60 2
+    return 0
+  fi
+
+  # Get the starting offset of the root partition
+  PART_START=$(parted "$ROOT_DEV" -ms unit s p | grep "^${PART_NUM}" | cut -f 2 -d: | sed 's/[^0-9]//g')
+  [ "$PART_START" ] || return 1
+  # Return value will likely be error for fdisk as it fails to reload the
+  # partition table because the root fs is mounted
+  fdisk "$ROOT_DEV" <<EOF
+p
+d
+$PART_NUM
+n
+p
+$PART_NUM
+$PART_START
+
+p
+w
+EOF
+  ASK_TO_REBOOT=1
+
+  # now set up an init.d script
+cat <<EOF > /etc/init.d/resize2fs_once &&
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          resize2fs_once
+# Required-Start:
+# Required-Stop:
+# Default-Start: 3
+# Default-Stop:
+# Short-Description: Resize the root filesystem to fill partition
+# Description:
+### END INIT INFO
+
+. /lib/lsb/init-functions
+
+case "\$1" in
+  start)
+    log_daemon_msg "Starting resize2fs_once" &&
+    resize2fs "$ROOT_PART" &&
+    update-rc.d resize2fs_once remove &&
+    rm /etc/init.d/resize2fs_once &&
+    log_end_msg \$?
+    ;;
+  *)
+    echo "Usage: \$0 start" >&2
+    exit 3
+    ;;
+esac
+EOF
+  chmod +x /etc/init.d/resize2fs_once &&
+  update-rc.d resize2fs_once defaults &&
+  if [ "$INTERACTIVE" = True ]; then
+    whiptail --msgbox "Root partition has been resized.\nThe filesystem will be enlarged upon the next reboot" 20 60 2
+  fi
+}
+
+do_change_pass() {
+  whiptail --msgbox "You will now be asked to enter a new password for the $USER user" 20 60 1
+  passwd $USER &&
+  whiptail --msgbox "Password changed successfully" 20 60 1
+}
+
+do_change_locale() {
+  if [ "$INTERACTIVE" = True ]; then
+    dpkg-reconfigure locales
+  else
+    if ! LOCALE_LINE="$(grep -E "^$1( |$)" /usr/share/i18n/SUPPORTED)"; then
+      return 1
+    fi
+    export LC_ALL=C
+    export LANG=C
+    local LG="/etc/locale.gen"
+    local NEW_LANG="$(echo $LOCALE_LINE | cut -f1 -d " ")"
+    [ -L "$LG" ] && [ "$(readlink $LG)" = "/usr/share/i18n/SUPPORTED" ] && rm -f "$LG"
+    echo "$LOCALE_LINE" > /etc/locale.gen
+    update-locale --no-checks LANG
+    update-locale --no-checks "LANG=$NEW_LANG"
+    dpkg-reconfigure -f noninteractive locales
+  fi
+}
+
+do_change_timezone() {
+  if [ "$INTERACTIVE" = True ]; then
+    dpkg-reconfigure tzdata
+  else
+    local TIMEZONE="$1"
+    if [ ! -f "/usr/share/zoneinfo/$TIMEZONE" ]; then
+      return 1;
+    fi
+    rm /etc/localtime
+    echo "$TIMEZONE" > /etc/timezone
+    dpkg-reconfigure -f noninteractive tzdata
+  fi
+}
+
+get_wifi_country() {
+  CODE=${1:-0}
+  IFACE="$(list_wlan_interfaces | head -n 1)"
+  if [ -z "$IFACE" ]; then
+    if [ "$INTERACTIVE" = True ]; then
+      whiptail --msgbox "No wireless interface found" 20 60
+    fi
+    return 1
+  fi
+  if ! wpa_cli -i "$IFACE" status > /dev/null 2>&1; then
+    if [ "$INTERACTIVE" = True ]; then
+      whiptail --msgbox "Could not communicate with wpa_supplicant" 20 60
+    fi
+    return 1
+  fi
+  wpa_cli -i "$IFACE" save_config > /dev/null 2>&1
+  COUNTRY="$(wpa_cli -i "$IFACE" get country)"
+  if [ "$COUNTRY" = "FAIL" ]; then
+    return 1
+  fi
+  if [ $CODE = 0 ]; then
+    echo "$COUNTRY"
+  fi
+  return 0
+}
+
+do_wifi_country() {
+  IFACE="$(list_wlan_interfaces | head -n 1)"
+  if [ -z "$IFACE" ]; then
+    if [ "$INTERACTIVE" = True ]; then
+      whiptail --msgbox "No wireless interface found" 20 60
+    fi
+    return 1
+  fi
+
+  if ! wpa_cli -i "$IFACE" status > /dev/null 2>&1; then
+    if [ "$INTERACTIVE" = True ]; then
+      whiptail --msgbox "Could not communicate with wpa_supplicant" 20 60
+    fi
+    return 1
+  fi
+
+  oIFS="$IFS"
+  if [ "$INTERACTIVE" = True ]; then
+    value=$(cat /usr/share/zoneinfo/iso3166.tab | tail -n +26 | tr '\t' '/' | tr '\n' '/')
+    IFS="/"
+    COUNTRY=$(whiptail --menu "Select the country in which the Pi is to be used" 20 60 10 ${value} 3>&1 1>&2 2>&3)
+  else
+    COUNTRY=$1
+    true
+  fi
+  if [ $? -eq 0 ];then
+    wpa_cli -i "$IFACE" set country "$COUNTRY"
+    wpa_cli -i "$IFACE" save_config > /dev/null 2>&1
+    if iw reg set "$COUNTRY" 2> /dev/null; then
+      ASK_TO_REBOOT=1
+    fi
+    if hash rfkill 2> /dev/null; then
+      rfkill unblock wifi
+      for filename in /var/lib/systemd/rfkill/*:wlan ; do
+        echo 0 > $filename
+      done
+    fi
+    if [ "$INTERACTIVE" = True ]; then
+      whiptail --msgbox "Wireless LAN country set to $COUNTRY" 20 60 1
+    fi
+  fi
+  IFS=$oIFS
+}
+
+get_hostname() {
+  cat /etc/hostname | tr -d " \t\n\r"
+}
+
+do_hostname() {
+  if [ "$INTERACTIVE" = True ]; then
+    whiptail --msgbox "\
+Please note: RFCs mandate that a hostname's labels \
+may contain only the ASCII letters 'a' through 'z' (case-insensitive), 
+the digits '0' through '9', and the hyphen.
+Hostname labels cannot begin or end with a hyphen. 
+No other symbols, punctuation characters, or blank spaces are permitted.\
+" 20 70 1
+  fi
+  CURRENT_HOSTNAME=`cat /etc/hostname | tr -d " \t\n\r"`
+  if [ "$INTERACTIVE" = True ]; then
+    NEW_HOSTNAME=$(whiptail --inputbox "Please enter a hostname" 20 60 "$CURRENT_HOSTNAME" 3>&1 1>&2 2>&3)
+  else
+    NEW_HOSTNAME=$1
+    true
+  fi
+  if [ $? -eq 0 ]; then
+    echo $NEW_HOSTNAME > /etc/hostname
+    sed -i "s/127.0.1.1.*$CURRENT_HOSTNAME/127.0.1.1\t$NEW_HOSTNAME/g" /etc/hosts
+    ASK_TO_REBOOT=1
+  fi
+}
+
+get_ssh() {
+  if service ssh status | grep -q inactive; then
+    echo 1
+  else
+    echo 0
+  fi
+}
+
+do_ssh() {
+  if [ -e /var/log/regen_ssh_keys.log ] && ! grep -q "^finished" /var/log/regen_ssh_keys.log; then
+    whiptail --msgbox "Initial ssh key generation still running. Please wait and try again." 20 60 2
+    return 1
+  fi
+  DEFAULT=--defaultno
+  if [ $(get_ssh) -eq 0 ]; then
+    DEFAULT=
+  fi
+  if [ "$INTERACTIVE" = True ]; then
+    whiptail --yesno \
+      "Would you like the SSH server to be enabled?\n\nCaution: Default and weak passwords are a security risk when SSH is enabled!" \
+      $DEFAULT 20 60 2
+    RET=$?
+  else
+    RET=$1
+  fi
+  if [ $RET -eq 0 ]; then
+    ssh-keygen -A &&
+    update-rc.d ssh enable &&
+    invoke-rc.d ssh start &&
+    STATUS=enabled
+  elif [ $RET -eq 1 ]; then
+    update-rc.d ssh disable &&
+    invoke-rc.d ssh stop &&
+    STATUS=disabled
+  else
+    return $RET
+  fi
+  if [ "$INTERACTIVE" = True ]; then
+    whiptail --msgbox "The SSH server is $STATUS" 20 60 1
+  fi
+}
+
+disable_brain_config_at_boot() {
+  if [ -e /etc/profile.d/brain-config.sh ]; then
+    rm -f /etc/profile.d/brain-config.sh
+    if [ -e /etc/systemd/system/getty@tty1.service.d/brain-config-override.conf ]; then
+      rm /etc/systemd/system/getty@tty1.service.d/brain-config-override.conf
+    fi
+    telinit q
+  fi
+}
+
+get_net_names() {
+  if grep -q "net.ifnames=0" $CMDLINE || \
+    ( [ "$(readlink -f /etc/systemd/network/99-default.link)" = "/dev/null" ] && \
+      [ "$(readlink -f /etc/systemd/network/73-usb-net-by-mac.link)" = "/dev/null" ] ); then
+    echo 1
+  else
+    echo 0
+  fi
+}
+
+do_net_names () {
+  DEFAULT=--defaultno
+  CURRENT=0
+  if [ $(get_net_names) -eq 0 ]; then
+    DEFAULT=
+    CURRENT=1
+  fi
+  if [ "$INTERACTIVE" = True ]; then
+    whiptail --yesno "Would you like to enable predictable network interface names?" $DEFAULT 20 60 2
+    RET=$?
+  else
+    RET=$1
+  fi
+  if [ $RET -eq $CURRENT ]; then
+    ASK_TO_REBOOT=1
+  fi
+  if [ $RET -eq 0 ]; then
+    sed -i $CMDLINE -e "s/net.ifnames=0 *//"
+    rm -f /etc/systemd/network/99-default.link
+    rm -f /etc/systemd/network/73-usb-net-by-mac.link
+    STATUS=enabled
+  elif [ $RET -eq 1 ]; then
+    ln -sf /dev/null /etc/systemd/network/99-default.link
+    ln -sf /dev/null /etc/systemd/network/73-usb-net-by-mac.link
+    STATUS=disabled
+  else
+    return $RET
+  fi
+  if [ "$INTERACTIVE" = True ]; then
+    whiptail --msgbox "Predictable network interface names are $STATUS" 20 60 1
+  fi
+}
+
+list_wlan_interfaces() {
+  for dir in /sys/class/net/*/wireless; do
+    if [ -d "$dir" ]; then
+      basename "$(dirname "$dir")"
+    fi
+  done
+}
+
+do_wifi_ssid_passphrase() {
+  RET=0
+  IFACE_LIST="$(list_wlan_interfaces)"
+  IFACE="$(echo "$IFACE_LIST" | head -n 1)"
+
+  if [ -z "$IFACE" ]; then
+    if [ "$INTERACTIVE" = True ]; then
+      whiptail --msgbox "No wireless interface found" 20 60
+    fi
+    return 1
+  fi
+
+  if ! wpa_cli -i "$IFACE" status > /dev/null 2>&1; then
+    if [ "$INTERACTIVE" = True ]; then
+      whiptail --msgbox "Could not communicate with wpa_supplicant" 20 60
+    fi
+    return 1
+  fi
+
+  if [ "$INTERACTIVE" = True ] && [ -z "$(get_wifi_country)" ]; then
+    do_wifi_country
+  fi
+
+  SSID="$1"
+  while [ -z "$SSID" ] && [ "$INTERACTIVE" = True ]; do
+    SSID=$(whiptail --inputbox "Please enter SSID" 20 60 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then
+      return 0
+    elif [ -z "$SSID" ]; then
+      whiptail --msgbox "SSID cannot be empty. Please try again." 20 60
+    fi
+  done
+
+  PASSPHRASE="$2"
+  while [ "$INTERACTIVE" = True ]; do
+    PASSPHRASE=$(whiptail --passwordbox "Please enter passphrase. Leave it empty if none." 20 60 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then
+      return 0
+    else
+      break
+    fi
+  done
+
+  # Escape special characters for embedding in regex below
+  local ssid="$(echo "$SSID" \
+   | sed 's;\\;\\\\;g' \
+   | sed -e 's;\.;\\\.;g' \
+         -e 's;\*;\\\*;g' \
+         -e 's;\+;\\\+;g' \
+         -e 's;\?;\\\?;g' \
+         -e 's;\^;\\\^;g' \
+         -e 's;\$;\\\$;g' \
+         -e 's;\/;\\\/;g' \
+         -e 's;\[;\\\[;g' \
+         -e 's;\];\\\];g' \
+         -e 's;{;\\{;g'   \
+         -e 's;};\\};g'   \
+         -e 's;(;\\(;g'   \
+         -e 's;);\\);g'   \
+         -e 's;";\\\\\";g')"
+
+  wpa_cli -i "$IFACE" list_networks \
+   | tail -n +2 | cut -f -2 | grep -P "\t$ssid$" | cut -f1 \
+   | while read ID; do
+    wpa_cli -i "$IFACE" remove_network "$ID" > /dev/null 2>&1
+  done
+
+  ID="$(wpa_cli -i "$IFACE" add_network)"
+  wpa_cli -i "$IFACE" set_network "$ID" ssid "\"$SSID\"" 2>&1 | grep -q "OK"
+  RET=$((RET + $?))
+
+  if [ -z "$PASSPHRASE" ]; then
+    wpa_cli -i "$IFACE" set_network "$ID" key_mgmt NONE 2>&1 | grep -q "OK"
+    RET=$((RET + $?))
+  else
+    wpa_cli -i "$IFACE" set_network "$ID" psk "\"$PASSPHRASE\"" 2>&1 | grep -q "OK"
+    RET=$((RET + $?))
+  fi
+
+  if [ $RET -eq 0 ]; then
+    wpa_cli -i "$IFACE" enable_network "$ID" > /dev/null 2>&1
+  else
+    wpa_cli -i "$IFACE" remove_network "$ID" > /dev/null 2>&1
+    if [ "$INTERACTIVE" = True ]; then
+      whiptail --msgbox "Failed to set SSID or passphrase" 20 60
+    fi
+  fi
+  wpa_cli -i "$IFACE" save_config > /dev/null 2>&1
+
+  echo "$IFACE_LIST" | while read IFACE; do
+    wpa_cli -i "$IFACE" reconfigure > /dev/null 2>&1
+  done
+
+  return $RET
+}
+
+do_finish() {
+  disable_brain_config_at_boot
+  if [ $ASK_TO_REBOOT -eq 1 ]; then
+    whiptail --yesno "Would you like to reboot now?" 20 60 2
+    if [ $? -eq 0 ]; then # yes
+      sync
+      reboot
+    fi
+  fi
+  exit 0
+}
+
+get_bootro_now() {
+  findmnt /boot | grep -q " ro,"
+  echo $?
+}
+
+get_bootro_conf() {
+  grep /boot /etc/fstab | grep -q "defaults.*,ro[ ,]"
+  echo $?
+}
+
+is_uname_current() {
+  test -d "/lib/modules/$(uname -r)"
+}
+
+nonint() {
+  "$@"
+}
+
+#
+# Command line options for non-interactive use
+#
+for i in $*
+do
+  case $i in
+  --expand-rootfs)
+    INTERACTIVE=False
+    do_expand_rootfs
+    printf "Please reboot\n"
+    exit 0
+    ;;
+  --apply-os-config)
+    INTERACTIVE=False
+    do_apply_os_config
+    exit $?
+    ;;
+  nonint)
+    INTERACTIVE=False
+    "$@"
+    exit $?
+    ;;
+  *)
+    # unknown option
+    ;;
+  esac
+done
+
+# Everything else needs to be run as root
+if [ $(id -u) -ne 0 ]; then
+  printf "Script must be run as root. Try 'sudo brain-config'\n"
+  exit 1
+fi
+
+do_system_menu() {
+  FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "System Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
+  "S1 Wireless LAN" "Enter SSID and passphrase" \
+  "S3 Password" "Change password for the '$USER' user" \
+  "S4 Hostname" "Set name for this computer on a network" \
+  3>&1 1>&2 2>&3)
+  RET=$?
+  if [ $RET -eq 1 ]; then
+    return 0
+  elif [ $RET -eq 0 ]; then
+    case "$FUN" in
+      S1\ *) do_wifi_ssid_passphrase ;;
+      S3\ *) do_change_pass ;;
+      S4\ *) do_hostname ;;
+      *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
+    esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
+  fi
+}
+
+do_interface_menu() {
+  FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Interfacing Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
+    "I2 SSH" "Enable/disable remote command line access using SSH" \
+    3>&1 1>&2 2>&3)
+  RET=$?
+  if [ $RET -eq 1 ]; then
+    return 0
+  elif [ $RET -eq 0 ]; then
+    case "$FUN" in
+      I2\ *) do_ssh ;;
+      *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
+    esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
+  fi
+}
+
+do_internationalisation_menu() {
+  FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Localisation Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
+    "L1 Locale" "Configure language and regional settings" \
+    "L2 Timezone" "Configure time zone" \
+    "L4 WLAN Country" "Set legal wireless channels for your country" \
+    3>&1 1>&2 2>&3)
+  RET=$?
+  if [ $RET -eq 1 ]; then
+    return 0
+  elif [ $RET -eq 0 ]; then
+    case "$FUN" in
+      L1\ *) do_change_locale ;;
+      L2\ *) do_change_timezone ;;
+      L4\ *) do_wifi_country ;;
+      *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
+    esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
+  fi
+}
+
+do_advanced_menu() {
+  FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Advanced Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
+    "A1 Expand Filesystem" "Ensures that all of the SD card is available" \
+    "A4 Network Interface Names" "Enable/disable predictable network i/f names" \
+    3>&1 1>&2 2>&3)
+  RET=$?
+  if [ $RET -eq 1 ]; then
+    return 0
+  elif [ $RET -eq 0 ]; then
+    case "$FUN" in
+      A1\ *) do_expand_rootfs ;;
+      A4\ *) do_net_names ;;
+      *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
+    esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
+  fi
+}
+
+#
+# Interactive use loop
+#
+if [ "$INTERACTIVE" = True ]; then
+  [ -e $CONFIG ] || touch $CONFIG
+  calc_wt_size
+  while [ "$USER" = "root" ] || [ -z "$USER" ]; do
+    if ! USER=$(whiptail --inputbox "brain-config could not determine the default user.\\n\\nWhat user should these settings apply to?" 20 60 pi 3>&1 1>&2 2>&3); then
+      return 0
+    fi
+  done
+  while true; do
+    FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Setup Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Finish --ok-button Select \
+      "1 System Options" "Configure system settings" \
+      "5 Localisation Options" "Configure language and regional settings" \
+      "6 Advanced Options" "Configure advanced settings" \
+      "9 About brain-config" "Information about this configuration tool" \
+      3>&1 1>&2 2>&3)
+    RET=$?
+    if [ $RET -eq 1 ]; then
+      do_finish
+    elif [ $RET -eq 0 ]; then
+      case "$FUN" in
+        1\ *) do_system_menu ;;
+        5\ *) do_internationalisation_menu ;;
+        6\ *) do_advanced_menu ;;
+        9\ *) do_about ;;
+        *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
+      esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
+    else
+      exit 1
+    fi
+  done
+fi

@@ -1,17 +1,9 @@
 #!/bin/sh
 
-reboot_pi () {
+reboot_brain () {
   umount /boot
   mount / -o remount,ro
   sync
-  if [ "$NOOBS" = "1" ]; then
-    if [ "$NEW_KERNEL" = "1" ]; then
-      reboot -f "$BOOT_PART_NUM"
-      sleep 5
-    else
-      echo "$BOOT_PART_NUM" > "/sys/module/${BCM_MODULE}/parameters/reboot_part"
-    fi
-  fi
   reboot -f
   sleep 5
   exit 0
@@ -32,14 +24,6 @@ check_commands () {
   return 0
 }
 
-check_noobs () {
-  if [ "$BOOT_PART_NUM" = "1" ]; then
-    NOOBS=0
-  else
-    NOOBS=1
-  fi
-}
-
 get_variables () {
   ROOT_PART_DEV=$(findmnt / -o source -n)
   ROOT_PART_NAME=$(echo "$ROOT_PART_DEV" | cut -d "/" -f 3)
@@ -54,8 +38,6 @@ get_variables () {
 
   OLD_DISKID=$(fdisk -l "$ROOT_DEV" | sed -n 's/Disk identifier: 0x\([^ ]*\)/\1/p')
 
-  check_noobs
-
   ROOT_DEV_SIZE=$(cat "/sys/block/${ROOT_DEV_NAME}/size")
   TARGET_END=$((ROOT_DEV_SIZE - 1))
 
@@ -66,13 +48,6 @@ get_variables () {
   ROOT_PART_LINE=$(echo "$PARTITION_TABLE" | grep -e "^${ROOT_PART_NUM}:")
   ROOT_PART_START=$(echo "$ROOT_PART_LINE" | cut -d ":" -f 2)
   ROOT_PART_END=$(echo "$ROOT_PART_LINE" | cut -d ":" -f 3)
-
-  if [ "$NOOBS" = "1" ]; then
-    EXT_PART_LINE=$(echo "$PARTITION_TABLE" | grep ":::;" | head -n 1)
-    EXT_PART_NUM=$(echo "$EXT_PART_LINE" | cut -d ":" -f 1)
-    EXT_PART_START=$(echo "$EXT_PART_LINE" | cut -d ":" -f 2)
-    EXT_PART_END=$(echo "$EXT_PART_LINE" | cut -d ":" -f 3)
-  fi
 }
 
 fix_partuuid() {
@@ -97,15 +72,6 @@ EOF
 }
 
 check_variables () {
-  if [ "$NOOBS" = "1" ]; then
-    if [ "$EXT_PART_NUM" -gt 4 ] || \
-       [ "$EXT_PART_START" -gt "$ROOT_PART_START" ] || \
-       [ "$EXT_PART_END" -lt "$ROOT_PART_END" ]; then
-      FAIL_REASON="Unsupported extended partition"
-      return 1
-    fi
-  fi
-
   if [ "$BOOT_DEV_NAME" != "$ROOT_DEV_NAME" ]; then
       FAIL_REASON="Boot and root partitions are on different devices"
       return 1
@@ -127,18 +93,6 @@ check_variables () {
   fi
 }
 
-check_kernel () {
-  MAJOR="$(uname -r | cut -f1 -d.)"
-  MINOR="$(uname -r | cut -f2 -d.)"
-  if [ "$MAJOR" -eq "4" ] && [ "$MINOR" -lt "9" ]; then
-    return 0
-  fi
-  if [ "$MAJOR" -lt "4" ]; then
-    return 0
-  fi
-  NEW_KERNEL=1
-}
-
 main () {
   get_variables
 
@@ -146,25 +100,8 @@ main () {
     return 1
   fi
 
-  check_kernel
-
-  if [ "$NOOBS" = "1" ] && [ "$NEW_KERNEL" != "1" ]; then
-    BCM_MODULE=$(grep -e "^Hardware" /proc/cpuinfo | cut -d ":" -f 2 | tr -d " " | tr '[:upper:]' '[:lower:]')
-    if ! modprobe "$BCM_MODULE"; then
-      FAIL_REASON="Couldn't load BCM module $BCM_MODULE"
-      return 1
-    fi
-  fi
-
   if [ "$ROOT_PART_END" -eq "$TARGET_END" ]; then
-    reboot_pi
-  fi
-
-  if [ "$NOOBS" = "1" ]; then
-    if ! printf "resizepart %s\nyes\n%ss\n" "$EXT_PART_NUM" "$TARGET_END" | parted "$ROOT_DEV" ---pretend-input-tty; then
-      FAIL_REASON="Extended partition resize failed"
-      return 1
-    fi
+    reboot_brain
   fi
 
   if ! parted -m "$ROOT_DEV" u s resizepart "$ROOT_PART_NUM" "$TARGET_END"; then
@@ -185,7 +122,7 @@ mkdir -p /run/systemd
 mount /boot
 mount / -o remount,ro
 
-sed -i 's| init=/usr/lib/raspi-config/init_resize\.sh||' /boot/cmdline.txt
+sed -i 's| init=/usr/lib/brain-config/init_resize\.sh||' /boot/cmdline.txt
 sed -i 's| sdhci\.debug_quirks2=4||' /boot/cmdline.txt
 
 if ! grep -q splash /boot/cmdline.txt; then
@@ -195,15 +132,15 @@ mount /boot -o remount,ro
 sync
 
 if ! check_commands; then
-  reboot_pi
+  reboot_brain
 fi
 
 if main; then
   whiptail --infobox "Resized root filesystem. Rebooting in 5 seconds..." 20 60
   sleep 5
 else
-  whiptail --msgbox "Could not expand filesystem, please try raspi-config or rc_gui.\n${FAIL_REASON}" 20 60
+  whiptail --msgbox "Could not expand filesystem, please try brain-config or rc_gui.\n${FAIL_REASON}" 20 60
   sleep 5
 fi
 
-reboot_pi
+reboot_brain
