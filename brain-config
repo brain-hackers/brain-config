@@ -295,6 +295,38 @@ do_ssh() {
   fi
 }
 
+do_usb() {
+  if [ "$INTERACTIVE" = True ]; then
+    MODE=$(whiptail --menu "Select the role of the USB Host Controller." 20 60 10 "host" "USB Host Mode" "peripheral" "USB Device Mode (for Gadget)" 3>&1 1>&2 2>&3)
+  else
+    MODE=$1
+    true
+  fi
+
+  MODEL=$(cat /sys/firmware/devicetree/base/compatible | grep -Eao 'pw-[a-z0-9]+' | sed -E 's/-//g')
+  DTB="/boot/imx28-${MODEL}.dtb"
+  DTS=`mktemp`
+
+  if [ "${MODE}" != "host" -a "${MODE}" != "peripheral" ]; then
+    echo "Specify the mode from 'host' or 'peripheral'."
+    return 1
+  fi
+
+  dtc -I dtb -O dts ${DTB} > ${DTS} 2> /dev/null
+
+  RE='(^[\t ]*dr_mode[\t ]*=[\t ]*\")(.*)(\"[\t ]*;[\t ]*$)'
+  CURRENT=`sed -En "s|${RE}|\2|p" ${DTS} | head -1`
+
+  if [ "${CURRENT}" != "${MODE}" ]; then
+    mount -o rw,remount /boot
+    echo "Changing dr_mode to ${MODE}"
+    sed -Ei "s|${RE}|\1${MODE}\3|" ${DTS}
+    dtc -I dts -O dtb ${DTS} > ${DTB} 2> /dev/null
+    sync
+    ASK_TO_REBOOT=1
+  fi
+}
+
 disable_brain_config_at_boot() {
   if [ -e /etc/profile.d/brain-config.sh ]; then
     rm -f /etc/profile.d/brain-config.sh
@@ -538,6 +570,7 @@ do_system_menu() {
 do_interface_menu() {
   FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Interfacing Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
     "I1 SSH" "Enable/disable remote command line access using SSH" \
+    "I2 USB" "Switch the role of the USB Host Controller" \
     3>&1 1>&2 2>&3)
   RET=$?
   if [ $RET -eq 1 ]; then
@@ -545,6 +578,7 @@ do_interface_menu() {
   elif [ $RET -eq 0 ]; then
     case "$FUN" in
       I1\ *) do_ssh ;;
+      I2\ *) do_usb ;;
       *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
     esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
   fi
