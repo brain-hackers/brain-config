@@ -1,3 +1,9 @@
+brain-config (20230327) bullseye; urgency=medium
+
+  * Added do_usb
+
+ -- Brain Hackers <dummy@example.com>  Mon, 27 Mar 2022 16:56:00 +0900
+
 brain-config (20220702) bullseye; urgency=medium
 
   * Forked from raspi-config
