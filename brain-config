@@ -295,6 +295,38 @@ do_ssh() {
   fi
 }
 
+do_usb() {
+  if [ "$INTERACTIVE" = True ]; then
+    MODE=$(whiptail --menu "Select the role of the USB Host Controller." 20 60 10 "host" "USB Host Mode" "peripheral" "USB Device Mode (for Gadget)" 3>&1 1>&2 2>&3)
+  else
+    MODE=$1
+    true
+  fi
+
+  MODEL=$(cat /sys/firmware/devicetree/base/compatible | grep -Eao 'pw-[a-z0-9]+' | sed -E 's/-//g')
+  DTB="/boot/imx28-${MODEL}.dtb"
+  DTS=`mktemp`
+
+  if [ "${MODE}" != "host" -a "${MODE}" != "peripheral" ]; then
+    echo "Specify the mode from 'host' or 'peripheral'."
+    return 1
+  fi
+
+  dtc -I dtb -O dts ${DTB} > ${DTS} 2> /dev/null
+
+  RE='(^[\t ]*dr_mode[\t ]*=[\t ]*\")(.*)(\"[\t ]*;[\t ]*$)'
+  CURRENT=`sed -En "s|${RE}|\2|p" ${DTS} | head -1`
+
+  if [ "${CURRENT}" != "${MODE}" ]; then
+    mount -o rw,remount /boot
+    echo "Changing dr_mode to ${MODE}"
+    sed -Ei "s|${RE}|\1${MODE}\3|" ${DTS}
+    dtc -I dts -O dtb ${DTS} > ${DTB} 2> /dev/null
+    sync
+    ASK_TO_REBOOT=1
+  fi
+}
+
 disable_brain_config_at_boot() {
   if [ -e /etc/profile.d/brain-config.sh ]; then
     rm -f /etc/profile.d/brain-config.sh
@@ -519,8 +551,8 @@ fi
 do_system_menu() {
   FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "System Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
   "S1 Wireless LAN" "Enter SSID and passphrase" \
-  "S3 Password" "Change password for the '$USER' user" \
-  "S4 Hostname" "Set name for this computer on a network" \
+  "S2 Password" "Change password for the '$USER' user" \
+  "S3 Hostname" "Set name for this computer on a network" \
   3>&1 1>&2 2>&3)
   RET=$?
   if [ $RET -eq 1 ]; then
@@ -528,8 +560,8 @@ do_system_menu() {
   elif [ $RET -eq 0 ]; then
     case "$FUN" in
       S1\ *) do_wifi_ssid_passphrase ;;
-      S3\ *) do_change_pass ;;
-      S4\ *) do_hostname ;;
+      S2\ *) do_change_pass ;;
+      S3\ *) do_hostname ;;
       *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
     esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
   fi
@@ -537,14 +569,16 @@ do_system_menu() {
 
 do_interface_menu() {
   FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Interfacing Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
-    "I2 SSH" "Enable/disable remote command line access using SSH" \
+    "I1 SSH" "Enable/disable remote command line access using SSH" \
+    "I2 USB" "Switch the role of the USB Host Controller" \
     3>&1 1>&2 2>&3)
   RET=$?
   if [ $RET -eq 1 ]; then
     return 0
   elif [ $RET -eq 0 ]; then
     case "$FUN" in
-      I2\ *) do_ssh ;;
+      I1\ *) do_ssh ;;
+      I2\ *) do_usb ;;
       *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
     esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
   fi
@@ -554,7 +588,7 @@ do_internationalisation_menu() {
   FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Localisation Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
     "L1 Locale" "Configure language and regional settings" \
     "L2 Timezone" "Configure time zone" \
-    "L4 WLAN Country" "Set legal wireless channels for your country" \
+    "L3 WLAN Country" "Set legal wireless channels for your country" \
     3>&1 1>&2 2>&3)
   RET=$?
   if [ $RET -eq 1 ]; then
@@ -563,7 +597,7 @@ do_internationalisation_menu() {
     case "$FUN" in
       L1\ *) do_change_locale ;;
       L2\ *) do_change_timezone ;;
-      L4\ *) do_wifi_country ;;
+      L3\ *) do_wifi_country ;;
       *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
     esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
   fi
@@ -572,7 +606,7 @@ do_internationalisation_menu() {
 do_advanced_menu() {
   FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Advanced Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Back --ok-button Select \
     "A1 Expand Filesystem" "Ensures that all of the SD card is available" \
-    "A4 Network Interface Names" "Enable/disable predictable network i/f names" \
+    "A2 Network Interface Names" "Enable/disable predictable network i/f names" \
     3>&1 1>&2 2>&3)
   RET=$?
   if [ $RET -eq 1 ]; then
@@ -580,7 +614,7 @@ do_advanced_menu() {
   elif [ $RET -eq 0 ]; then
     case "$FUN" in
       A1\ *) do_expand_rootfs ;;
-      A4\ *) do_net_names ;;
+      A2\ *) do_net_names ;;
       *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
     esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
   fi
@@ -600,9 +634,10 @@ if [ "$INTERACTIVE" = True ]; then
   while true; do
     FUN=$(whiptail --title "SHARP Brain Software Configuration Tool (brain-config)" --menu "Setup Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Finish --ok-button Select \
       "1 System Options" "Configure system settings" \
-      "5 Localisation Options" "Configure language and regional settings" \
-      "6 Advanced Options" "Configure advanced settings" \
-      "9 About brain-config" "Information about this configuration tool" \
+      "2 Interface Options" "Configure connections to peripherals" \
+      "3 Localisation Options" "Configure language and regional settings" \
+      "4 Advanced Options" "Configure advanced settings" \
+      "5 About brain-config" "Information about this configuration tool" \
       3>&1 1>&2 2>&3)
     RET=$?
     if [ $RET -eq 1 ]; then
@@ -610,9 +645,10 @@ if [ "$INTERACTIVE" = True ]; then
     elif [ $RET -eq 0 ]; then
       case "$FUN" in
         1\ *) do_system_menu ;;
-        5\ *) do_internationalisation_menu ;;
-        6\ *) do_advanced_menu ;;
-        9\ *) do_about ;;
+        2\ *) do_interface_menu ;;
+        3\ *) do_internationalisation_menu ;;
+        4\ *) do_advanced_menu ;;
+        5\ *) do_about ;;
         *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
       esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
     else
